@@ -1,0 +1,354 @@
+From a14cd26ffa08f366705dc055379c23fcc1e111ca Mon Sep 17 00:00:00 2001
+From: magic_shieh <yili_xie@htc.com>
+Date: Thu, 16 Jan 2014 17:34:04 +0800
+Subject: [PATCH] [k] Enable uncached ftrace
+
+Symptom:Overall system stabilyt issues
+Root Cause:NA
+Solution:Collect system event
+Project:CP5
+Note:It incurs a significant performance overhead.
+
+Change-Id: Ibcdfd6a074ddbcbcf697e421e8c0d377745ca4aa
+
+Signed-off-by: magic_shieh <yili_xie@htc.com>
+---
+ arch/arm/configs/cp5dtu_defconfig                  |    1 +
+ arch/arm/configs/cp5dug_defconfig                  |    1 +
+ arch/arm/configs/cp5dwg_defconfig                  |    1 +
+ arch/arm/mach-sc/Kconfig                           |   10 ++
+ arch/arm/mach-sc/Makefile                          |    1 +
+ arch/arm/mach-sc/include/mach/__memlayout-cp5dtu.h |    2 +-
+ arch/arm/mach-sc/include/mach/__memlayout-cp5dug.h |    2 +-
+ arch/arm/mach-sc/include/mach/__memlayout-cp5dwg.h |    2 +-
+ arch/arm/mach-sc/reserve.c                         |   12 ++
+ arch/arm/mach-sc/uncached-ftrace.c                 |  145 ++++++++++++++++++++
+ kernel/trace/ring_buffer.c                         |   11 ++
+ kernel/trace/trace.c                               |    5 +-
+ 12 files changed, 189 insertions(+), 4 deletions(-)
+ create mode 100644 arch/arm/mach-sc/uncached-ftrace.c
+
+diff --git a/arch/arm/configs/cp5dtu_defconfig b/arch/arm/configs/cp5dtu_defconfig
+index fe7426c..f549aba 100644
+--- a/arch/arm/configs/cp5dtu_defconfig
++++ b/arch/arm/configs/cp5dtu_defconfig
+@@ -322,6 +322,7 @@ CONFIG_MACH_CP5DTU=y
+ # Bug Shooting Tool Box
+ #
+ CONFIG_LAST_IO=y
++CONFIG_UNCACHED_FTRACE=y
+ 
+ CONFIG_SPRD_ION_SIZE=1
+ CONFIG_SPRD_ION_OVERLAY_SIZE=15
+diff --git a/arch/arm/configs/cp5dug_defconfig b/arch/arm/configs/cp5dug_defconfig
+index a436317..334fa78b 100644
+--- a/arch/arm/configs/cp5dug_defconfig
++++ b/arch/arm/configs/cp5dug_defconfig
+@@ -322,6 +322,7 @@ CONFIG_MACH_CP5DUG=y
+ # Bug Shooting Tool Box
+ #
+ CONFIG_LAST_IO=y
++CONFIG_UNCACHED_FTRACE=y
+ 
+ CONFIG_SPRD_ION_SIZE=1
+ CONFIG_SPRD_ION_OVERLAY_SIZE=15
+diff --git a/arch/arm/configs/cp5dwg_defconfig b/arch/arm/configs/cp5dwg_defconfig
+index 8c4f65c..3e30410 100644
+--- a/arch/arm/configs/cp5dwg_defconfig
++++ b/arch/arm/configs/cp5dwg_defconfig
+@@ -322,6 +322,7 @@ CONFIG_MACH_CP5DWG=y
+ # Bug Shooting Tool Box
+ #
+ CONFIG_LAST_IO=y
++CONFIG_UNCACHED_FTRACE=y
+ 
+ CONFIG_SPRD_ION_SIZE=1
+ CONFIG_SPRD_ION_OVERLAY_SIZE=15
+diff --git a/arch/arm/mach-sc/Kconfig b/arch/arm/mach-sc/Kconfig
+index 8e02305..3fd8fd5 100644
+--- a/arch/arm/mach-sc/Kconfig
++++ b/arch/arm/mach-sc/Kconfig
+@@ -265,6 +265,16 @@ config LAST_IO
+ 	help
+ 	  Save last io operations, used for bus dead lock, etc
+ 
++config UNCACHED_FTRACE
++	bool "Ftrace with uncached buffer"
++	default n
++	select GENERIC_ALLOCATOR
++	select KALLSYMS
++	select FTRACE
++	select FUNCTION_TRACER
++	help
++	  Enable trace event by default, save trace log in uncached buffer
++
+ endmenu
+ 
+ config SPRD_ION_SIZE
+diff --git a/arch/arm/mach-sc/Makefile b/arch/arm/mach-sc/Makefile
+index 0a8bd5b..3c387dd 100644
+--- a/arch/arm/mach-sc/Makefile
++++ b/arch/arm/mach-sc/Makefile
+@@ -12,6 +12,7 @@ obj-$(CONFIG_ARCH_SCX35) += timer_sc8830.o
+ obj-$(CONFIG_PM_DEVFREQ) += dmc_freq.o
+ 
+ obj-$(CONFIG_LAST_IO) += last-io.o
++obj-$(CONFIG_UNCACHED_FTRACE) += uncached-ftrace.o
+ 
+ obj-$(CONFIG_PM) += pm.o
+ obj-$(CONFIG_FIX_V7TAGRAM_BUG) += fix_v7_tag_ram_bug.o
+diff --git a/arch/arm/mach-sc/include/mach/__memlayout-cp5dtu.h b/arch/arm/mach-sc/include/mach/__memlayout-cp5dtu.h
+index b1c444c..588f827 100644
+--- a/arch/arm/mach-sc/include/mach/__memlayout-cp5dtu.h
++++ b/arch/arm/mach-sc/include/mach/__memlayout-cp5dtu.h
+@@ -122,7 +122,7 @@
+ #define SPRD_RAM_CONSOLE_START		(RC_BASE_ADDR)
+ #endif
+ 
+-#ifdef CONFIG_HTC_DBG_UNCACHE_FTRACE
++#ifdef CONFIG_UNCACHED_FTRACE
+ #define FT_BASE_PHY (246 * SZ_1M + 0x80000000)
+ #define FT_SIZE_PHY (8 * SZ_1M)
+ #endif
+diff --git a/arch/arm/mach-sc/include/mach/__memlayout-cp5dug.h b/arch/arm/mach-sc/include/mach/__memlayout-cp5dug.h
+index 3bb9cb8..9be194f 100644
+--- a/arch/arm/mach-sc/include/mach/__memlayout-cp5dug.h
++++ b/arch/arm/mach-sc/include/mach/__memlayout-cp5dug.h
+@@ -122,7 +122,7 @@
+ #define SPRD_RAM_CONSOLE_START		(RC_BASE_ADDR)
+ #endif
+ 
+-#ifdef CONFIG_HTC_DBG_UNCACHE_FTRACE
++#ifdef CONFIG_UNCACHED_FTRACE
+ #define FT_BASE_PHY (246 * SZ_1M + 0x80000000)
+ #define FT_SIZE_PHY (8 * SZ_1M)
+ #endif
+diff --git a/arch/arm/mach-sc/include/mach/__memlayout-cp5dwg.h b/arch/arm/mach-sc/include/mach/__memlayout-cp5dwg.h
+index 4ced8e8..ad9ce14 100644
+--- a/arch/arm/mach-sc/include/mach/__memlayout-cp5dwg.h
++++ b/arch/arm/mach-sc/include/mach/__memlayout-cp5dwg.h
+@@ -122,7 +122,7 @@
+ #define SPRD_RAM_CONSOLE_START		(RC_BASE_ADDR)
+ #endif
+ 
+-#ifdef CONFIG_HTC_DBG_UNCACHE_FTRACE
++#ifdef CONFIG_UNCACHED_FTRACE
+ #define FT_BASE_PHY (246 * SZ_1M + 0x80000000)
+ #define FT_SIZE_PHY (8 * SZ_1M)
+ #endif
+diff --git a/arch/arm/mach-sc/reserve.c b/arch/arm/mach-sc/reserve.c
+index 0f8b743..1273b95 100644
+--- a/arch/arm/mach-sc/reserve.c
++++ b/arch/arm/mach-sc/reserve.c
+@@ -52,6 +52,18 @@ static int __init __fbmem_reserve_memblock(void)
+ }
+ #endif
+ 
++#ifdef CONFIG_UNCACHED_FTRACE
++int __init __ftrace_reserve_mnemblock(void)
++{
++	if(memblock_is_region_reserved(FT_BASE_PHY, FT_SIZE_PHY))
++		return -EBUSY;
++	if(memblock_reserve(FT_BASE_PHY,FT_SIZE_PHY))
++		return -ENOMEM;
++
++	return 0;
++}
++#endif
++
+ void __init sci_reserve(void)
+ {
+ #ifndef PROJECT_SPECIAL_LAYOUT
+diff --git a/arch/arm/mach-sc/uncached-ftrace.c b/arch/arm/mach-sc/uncached-ftrace.c
+new file mode 100644
+index 0000000..08c63c5
+--- /dev/null
++++ b/arch/arm/mach-sc/uncached-ftrace.c
+@@ -0,0 +1,145 @@
++/* arch/arm/mach-sc/uncached-ftrace.c
++ * Copyright (C) 2013 HTC Corporation.
++ * Author: Yili Xie <yili_xie@htc.com>
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++*/
++
++
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/errno.h>
++#include <linux/spinlock.h>
++#include <linux/io.h>
++#include <linux/genalloc.h>
++#include <linux/ftrace_event.h>
++#include <mach/board.h>
++#include <mach/board_htc.h>
++
++extern int tracing_update_buffers(void);
++extern int tracing_set_tracer(const char *buf);
++
++unsigned long ft_pool_phys = FT_BASE_PHY;
++struct gen_pool *ft_pool;
++void * ft_virt_base;
++
++unsigned long ft__get_free_page(unsigned int ignored)
++{
++	if (htc_get_config(HTC_DBG_FLAG_SUPERMAN) & SUPERMAN_FLAG_FTRACE) {
++		if (!ft_pool) {
++			printk(KERN_ERR "FT buffer is not initial\n");
++			return 0;
++		}
++
++		return gen_pool_alloc(ft_pool, PAGE_SIZE);
++	}
++	else
++		return __get_free_page(ignored);
++}
++
++void ft_free_page(unsigned long page)
++{
++	if (htc_get_config(HTC_DBG_FLAG_SUPERMAN) & SUPERMAN_FLAG_FTRACE) {
++		if(!page)
++			return;
++
++		gen_pool_free(ft_pool, page, PAGE_SIZE);
++	}
++	else
++		free_page(page);
++}
++
++static int __init ft_pool_init(void)
++{
++	int err;
++
++	if (htc_get_config(HTC_DBG_FLAG_SUPERMAN) & SUPERMAN_FLAG_FTRACE) {
++		ft_virt_base = ioremap(ft_pool_phys, SZ_8M);
++		if (!ft_virt_base)
++			return -ENOMEM;
++
++		printk(KERN_INFO "[k] Genalloc for FT uncached buffer base:%p \n", ft_virt_base);
++
++		ft_pool = gen_pool_create(PAGE_SHIFT, -1);
++		if (!ft_pool) {
++			printk(KERN_ERR "Create pool for FT fail\n");
++			return -ENOMEM;
++		}
++
++		err = gen_pool_add(ft_pool, (unsigned long) ft_virt_base, SZ_8M, -1);
++		if (err) {
++			printk(KERN_ERR "Add memory to FT pool fail\n");
++			return err;
++		}
++	}
++
++	return 0;
++}
++
++static int __init ft_late(void)
++{
++	if (htc_get_config(HTC_DBG_FLAG_SUPERMAN) & SUPERMAN_FLAG_FTRACE) {
++		printk(KERN_INFO "[k] Uncache FT is enabled\n");
++		tracing_update_buffers();
++
++		if (htc_get_config(HTC_DBG_FLAG_SUPERMAN) & SUPERMAN_FLAG_FTRACE_HANG) {
++			trace_set_clr_event("irq", "irq_handler_entry", 1);
++			trace_set_clr_event("irq", "irq_handler_exit", 1);
++			trace_set_clr_event("sched", "sched_switch", 1);
++			trace_set_clr_event("workqueue", "workqueue_execute_start", 1);
++			trace_set_clr_event("workqueue", "workqueue_execute_end", 1);
++			trace_set_clr_event("power", "clock_enable", 1);
++			trace_set_clr_event("power", "clock_disable", 1);
++			trace_set_clr_event("regulator", "regulator_enable", 1);
++			trace_set_clr_event("regulator", "regulator_disable", 1);
++			printk(KERN_INFO "[k] Enable FT for hang issue debug\n");
++		}
++
++		if (htc_get_config(HTC_DBG_FLAG_SUPERMAN) & SUPERMAN_FLAG_FTRACE_MEM) {
++			trace_set_clr_event("kmem", NULL, 1);
++			trace_set_clr_event("oom", NULL, 1);
++			printk(KERN_INFO "[k] Enable FT for memory issue debug\n");
++		}
++
++		if (htc_get_config(HTC_DBG_FLAG_SUPERMAN) & SUPERMAN_FLAG_FTRACE_CPU) {
++			trace_set_clr_event("sched", NULL, 1);
++			trace_set_clr_event("irq", NULL, 1);
++			trace_set_clr_event("workqueue", NULL, 1);
++			trace_set_clr_event("rcu", NULL, 1);
++			printk(KERN_INFO "[k] Enable FT for SCHED issue debug\n");
++		}
++
++		if (htc_get_config(HTC_DBG_FLAG_SUPERMAN) & SUPERMAN_FLAG_FTRACE_SIGNAL) {
++			trace_set_clr_event("signal", NULL, 1);
++			printk(KERN_INFO "[k] Enable FT for SIGNAL issue debug\n");
++		}
++
++		if (htc_get_config(HTC_DBG_FLAG_SUPERMAN) & SUPERMAN_FLAG_FTRACE_BINDER) {
++			trace_set_clr_event("binder", NULL, 1);
++			printk(KERN_INFO "[k] Enable FT for BINDER issue debug\n");
++		}
++
++		if (htc_get_config(HTC_DBG_FLAG_SUPERMAN) & SUPERMAN_FLAG_FTRACE_POWER) {
++			trace_set_clr_event("power", NULL, 1);
++			trace_set_clr_event("regulator", NULL, 1);
++			trace_set_clr_event("gpio", NULL, 1);
++			printk(KERN_INFO "[k] Enable FT for POWER issue debug\n");
++		}
++	}
++
++	return 0;
++}
++
++core_initcall(ft_pool_init);
++late_initcall(ft_late);
++
++MODULE_AUTHOR("Yili Xie <yili_xie@htc.com>");
++MODULE_DESCRIPTION("Uncached Ftrace function");
++MODULE_LICENSE("GPL v2");
+diff --git a/kernel/trace/ring_buffer.c b/kernel/trace/ring_buffer.c
+index e444ff8..e98f612 100644
+--- a/kernel/trace/ring_buffer.c
++++ b/kernel/trace/ring_buffer.c
+@@ -27,6 +27,17 @@
+ 
+ #include <asm/local.h>
+ 
++#ifdef CONFIG_UNCACHED_FTRACE
++#undef __get_free_page
++#undef free_page
++
++extern unsigned long ft__get_free_page(unsigned int ignored);
++extern void ft_free_page(unsigned long page);
++
++#define __get_free_page ft__get_free_page
++#define free_page ft_free_page
++#endif
++
+ static void update_pages_handler(struct work_struct *work);
+ 
+ /*
+diff --git a/kernel/trace/trace.c b/kernel/trace/trace.c
+index c431a16..4a20cab 100644
+--- a/kernel/trace/trace.c
++++ b/kernel/trace/trace.c
+@@ -282,8 +282,11 @@ int tracing_is_enabled(void)
+  * boot time and run time configurable.
+  */
+ #define TRACE_BUF_SIZE_DEFAULT	1441792UL /* 16384 * 88 (sizeof(entry)) */
+-
++#ifdef CONFIG_UNCACHED_FTRACE
++static unsigned long		trace_buf_size = 3 * 1024 * 1024;
++#else
+ static unsigned long		trace_buf_size = TRACE_BUF_SIZE_DEFAULT;
++#endif
+ 
+ /* trace_types holds a link list of available tracers. */
+ static struct tracer		*trace_types __read_mostly;
+-- 
+1.7.9.5
+
