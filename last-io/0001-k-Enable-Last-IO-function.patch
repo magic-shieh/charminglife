@@ -1,0 +1,413 @@
+From 330c5d042ee543e6a1317a5ab1b4ccedb8916095 Mon Sep 17 00:00:00 2001
+From: magic_shieh <yili_xie@htc.com>
+Date: Thu, 16 Jan 2014 14:59:45 +0800
+Subject: [PATCH] [k] Enable Last IO function
+
+Symptom:For bus dead lock issue
+Root Cause:Access powerdown or no-clock module
+Solution:Record each register access
+Project:CP5
+Note:It incurs a little performance overhead.
+
+Change-Id: I3845045e7df0713cc51691bcaeec782851b26636
+
+Signed-off-by: magic_shieh <yili_xie@htc.com>
+---
+ arch/arm/configs/cp5dtu_defconfig       |    6 +++
+ arch/arm/configs/cp5dug_defconfig       |    6 +++
+ arch/arm/configs/cp5dwg_defconfig       |    6 +++
+ arch/arm/include/asm/io.h               |   39 +++++++-------
+ arch/arm/mach-sc/Kconfig                |    9 ++++
+ arch/arm/mach-sc/Makefile               |    2 +
+ arch/arm/mach-sc/include/mach/last-io.h |   88 +++++++++++++++++++++++++++++++
+ arch/arm/mach-sc/last-io.c              |   72 +++++++++++++++++++++++++
+ 8 files changed, 208 insertions(+), 20 deletions(-)
+ create mode 100644 arch/arm/mach-sc/include/mach/last-io.h
+ create mode 100644 arch/arm/mach-sc/last-io.c
+
+diff --git a/arch/arm/configs/cp5dtu_defconfig b/arch/arm/configs/cp5dtu_defconfig
+index 7ccca7e..fe7426c 100644
+--- a/arch/arm/configs/cp5dtu_defconfig
++++ b/arch/arm/configs/cp5dtu_defconfig
+@@ -317,6 +317,12 @@ CONFIG_ARCH_SCX35=y
+ # CONFIG_MACH_SPX35FPGA is not set
+ # CONFIG_MACH_SP7735EC is not set
+ CONFIG_MACH_CP5DTU=y
++
++#
++# Bug Shooting Tool Box
++#
++CONFIG_LAST_IO=y
++
+ CONFIG_SPRD_ION_SIZE=1
+ CONFIG_SPRD_ION_OVERLAY_SIZE=15
+ CONFIG_SC_VIBRATOR=y
+diff --git a/arch/arm/configs/cp5dug_defconfig b/arch/arm/configs/cp5dug_defconfig
+index c2ea84f..a436317 100644
+--- a/arch/arm/configs/cp5dug_defconfig
++++ b/arch/arm/configs/cp5dug_defconfig
+@@ -317,6 +317,12 @@ CONFIG_ARCH_SCX35=y
+ # CONFIG_MACH_SPX35FPGA is not set
+ # CONFIG_MACH_SP7735EC is not set
+ CONFIG_MACH_CP5DUG=y
++
++#
++# Bug Shooting Tool Box
++#
++CONFIG_LAST_IO=y
++
+ CONFIG_SPRD_ION_SIZE=1
+ CONFIG_SPRD_ION_OVERLAY_SIZE=15
+ CONFIG_SC_VIBRATOR=y
+diff --git a/arch/arm/configs/cp5dwg_defconfig b/arch/arm/configs/cp5dwg_defconfig
+index d79d538..8c4f65c 100644
+--- a/arch/arm/configs/cp5dwg_defconfig
++++ b/arch/arm/configs/cp5dwg_defconfig
+@@ -317,6 +317,12 @@ CONFIG_ARCH_SCX35=y
+ # CONFIG_MACH_SPX35FPGA is not set
+ # CONFIG_MACH_SP7735EC is not set
+ CONFIG_MACH_CP5DWG=y
++
++#
++# Bug Shooting Tool Box
++#
++CONFIG_LAST_IO=y
++
+ CONFIG_SPRD_ION_SIZE=1
+ CONFIG_SPRD_ION_OVERLAY_SIZE=15
+ CONFIG_SC_VIBRATOR=y
+diff --git a/arch/arm/include/asm/io.h b/arch/arm/include/asm/io.h
+index 202a5ae..81ae653 100644
+--- a/arch/arm/include/asm/io.h
++++ b/arch/arm/include/asm/io.h
+@@ -27,8 +27,8 @@
+ #include <asm/byteorder.h>
+ #include <asm/memory.h>
+ #include <asm-generic/pci_iomap.h>
+-#ifdef CONFIG_SPRD_DEBUG
+-#include <linux/regs_debug.h>
++#ifdef CONFIG_LAST_IO
++#include <mach/last-io.h>
+ #endif
+ /*
+  * ISA I/O bus memory addresses are 1:1 with the physical address.
+@@ -49,7 +49,7 @@ extern void __raw_readsb(const void __iomem *addr, void *data, int bytelen);
+ extern void __raw_readsw(const void __iomem *addr, void *data, int wordlen);
+ extern void __raw_readsl(const void __iomem *addr, void *data, int longlen);
+ 
+-#ifndef CONFIG_SPRD_DEBUG
++#ifndef CONFIG_LAST_IO
+ #if __LINUX_ARM_ARCH__ < 6
+ /*
+  * Half-word accesses are problematic with RiscPC due to limitations of
+@@ -113,23 +113,22 @@ static inline u32 __raw_readl(const volatile void __iomem *addr)
+ 	return val;
+ }
+ #else
+-extern struct sprd_debug_regs_access sprd_debug_last_regs_access[NR_CPUS];
+ #if __LINUX_ARM_ARCH__ < 6
+ /*
+  * Half-word accesses are problematic with RiscPC due to limitations of
+  * the bus. Rather than special-case the machine, just let the compiler
+  * generate the access for CPUs prior to ARMv6.
+  */
+-#define __raw_writew(v,a)  ({sprd_debug_regs_write_start(v, a); \
++#define __raw_writew(v,a)  ({__mem_io_w(v, a); \
+                __chk_io_ptr(a); \
+                *(volatile unsigned short __force  *)(a) = (v); \
+-               sprd_debug_regs_access_done(); \
++               __io_done(); \
+                })
+-#define __raw_readw(a)     ({sprd_debug_regs_read_start(a);\
++#define __raw_readw(a)     ({__mem_io_r(a);\
+                volatile unsigned short v;  \
+                __chk_io_ptr(a); \
+                v = *(volatile unsigned short __force  *)(a); \
+-               sprd_debug_regs_access_done(); \
++               __io_done(); \
+                v;\
+                })
+ #else
+@@ -140,62 +139,62 @@ extern struct sprd_debug_regs_access sprd_debug_last_regs_access[NR_CPUS];
+  */
+ static inline void __raw_writew(u16 val, volatile void __iomem *addr)
+ {
+-	sprd_debug_regs_write_start(val, addr);
++	__mem_io_w(val, addr);
+ 	asm volatile("strh %1, %0"
+ 		     : "+Q" (*(volatile u16 __force *)addr)
+ 		     : "r" (val));
+-	sprd_debug_regs_access_done();
++	__io_done();
+ }
+ 
+ static inline u16 __raw_readw(const volatile void __iomem *addr)
+ {
+ 	u16 val;
+-	sprd_debug_regs_read_start(addr);
++	__mem_io_r(addr);
+ 	asm volatile("ldrh %1, %0"
+ 		     : "+Q" (*(volatile u16 __force *)addr),
+ 		       "=r" (val));
+-	sprd_debug_regs_access_done();
++	__io_done();
+ 	return val;
+ }
+ #endif
+ 
+ static inline void __raw_writeb(u8 val, volatile void __iomem *addr)
+ {
+-	sprd_debug_regs_write_start(val, addr);
++	__mem_io_w(val, addr);
+ 	asm volatile("strb %1, %0"
+ 		     : "+Qo" (*(volatile u8 __force *)addr)
+ 		     : "r" (val));
+-	sprd_debug_regs_access_done();
++	__io_done();
+ }
+ 
+ static inline void __raw_writel(u32 val, volatile void __iomem *addr)
+ {
+-	sprd_debug_regs_write_start(val, addr);
++	__mem_io_w(val, addr);
+ 	asm volatile("str %1, %0"
+ 		     : "+Qo" (*(volatile u32 __force *)addr)
+ 		     : "r" (val));
+-	sprd_debug_regs_access_done();
++	__io_done();
+ }
+ 
+ static inline u8 __raw_readb(const volatile void __iomem *addr)
+ {
+ 	u8 val;
+-	sprd_debug_regs_read_start(addr);
++	__mem_io_r(addr);
+ 	asm volatile("ldrb %1, %0"
+ 		     : "+Qo" (*(volatile u8 __force *)addr),
+ 		       "=r" (val));
+-	sprd_debug_regs_access_done();
++	__io_done();
+ 	return val;
+ }
+ 
+ static inline u32 __raw_readl(const volatile void __iomem *addr)
+ {
+ 	u32 val;
+-	sprd_debug_regs_read_start(addr);
++	__mem_io_r(addr);
+ 	asm volatile("ldr %1, %0"
+ 		     : "+Qo" (*(volatile u32 __force *)addr),
+ 		       "=r" (val));
+-	sprd_debug_regs_access_done();
++	__io_done();
+ 	return val;
+ }
+ #endif
+diff --git a/arch/arm/mach-sc/Kconfig b/arch/arm/mach-sc/Kconfig
+index f00cc07..8e02305 100644
+--- a/arch/arm/mach-sc/Kconfig
++++ b/arch/arm/mach-sc/Kconfig
+@@ -258,6 +258,15 @@ config MACH_SP7730GA
+ 
+ endmenu
+ 
++menu "Bug Shooting Tool Box"
++config LAST_IO
++	bool "Save last register accesses"
++	default n
++	help
++	  Save last io operations, used for bus dead lock, etc
++
++endmenu
++
+ config SPRD_ION_SIZE
+         int "size for ion"
+         range 1 64
+diff --git a/arch/arm/mach-sc/Makefile b/arch/arm/mach-sc/Makefile
+index fc827ce..0a8bd5b 100644
+--- a/arch/arm/mach-sc/Makefile
++++ b/arch/arm/mach-sc/Makefile
+@@ -11,6 +11,8 @@ obj-$(CONFIG_ARCH_SCX35) += devices-sc8830.o io-sc8830.o  clock-sc8830.o arch_mi
+ obj-$(CONFIG_ARCH_SCX35) += timer_sc8830.o
+ obj-$(CONFIG_PM_DEVFREQ) += dmc_freq.o
+ 
++obj-$(CONFIG_LAST_IO) += last-io.o
++
+ obj-$(CONFIG_PM) += pm.o
+ obj-$(CONFIG_FIX_V7TAGRAM_BUG) += fix_v7_tag_ram_bug.o
+ obj-$(CONFIG_CPU_FREQ) += cpufreq-scx35.o
+diff --git a/arch/arm/mach-sc/include/mach/last-io.h b/arch/arm/mach-sc/include/mach/last-io.h
+new file mode 100644
+index 0000000..9e6397e
+--- /dev/null
++++ b/arch/arm/mach-sc/include/mach/last-io.h
+@@ -0,0 +1,88 @@
++/* arch/arm/mach-sc/include/mach/last-io.h
++ * Copyright (C) 2013 HTC Corporation.
++ * Author: Yili Xie <yili_xie@htc.com>
++ *
++ * It is a debug function without clock protection in SMP env.
++ * Performance is the first priority here.
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++*/
++
++#ifndef __LAST_IO_H__
++#define __LAST_IO_H__
++
++#include <linux/jiffies.h>
++#define NUM_LAST_IO_PER_CPU 4
++
++struct __last_io {
++	volatile void __iomem *vaddr;
++	u32 value;
++	u32 pc;
++	u32 lr;
++	u64 jiffies;
++	u32 state;
++};
++
++struct last_io_percpu {
++	u32 index;
++	struct __last_io _last_io[NUM_LAST_IO_PER_CPU];
++};
++
++extern int last_io_init;
++extern struct last_io_percpu *htc_last_io;
++
++static inline void __last_io_start(u32 value, volatile void __iomem *vaddr)
++{
++	u32 cpu, pc, lr, index;
++
++	if (last_io_init) {
++		asm volatile (
++				"	mrc p15, 0, %0, c0, c0, 5\n"	\
++				"	ands %0, %0, #0xf\n"		\
++				"	mov %1, r15\n"		\
++				"	mov %2, lr\n"		\
++				:	"=&r" (cpu), "=&r" (pc), "=&r" (lr)	\
++				:	\
++				:	"memory"	\
++				);
++		index = htc_last_io[cpu].index;
++		htc_last_io[cpu].index = (index + 1) & (NUM_LAST_IO_PER_CPU - 1);
++		htc_last_io[cpu]._last_io[index].jiffies = jiffies_64;
++		htc_last_io[cpu]._last_io[index].vaddr = vaddr;
++		htc_last_io[cpu]._last_io[index].value = value;
++		htc_last_io[cpu]._last_io[index].pc = pc;
++		htc_last_io[cpu]._last_io[index].lr = lr;
++		htc_last_io[cpu]._last_io[index].state = 0;
++	}
++}
++
++static inline void __last_io_done(void)
++{
++	u32 cpu, index;
++
++	if(last_io_init) {
++		asm volatile (
++				"	mrc p15, 0, %0, c0, c0, 5\n"	\
++				"	ands %0, %0, #0xf\n"	\
++				:	"=&r" (cpu)	\
++				:	\
++				:	"memory"		\
++				);
++		index = (htc_last_io[cpu].index == 0)?(NUM_LAST_IO_PER_CPU - 1):(htc_last_io[cpu].index - 1);
++		htc_last_io[cpu]._last_io[index].jiffies = jiffies_64;
++		htc_last_io[cpu]._last_io[index].state = 1;
++	}
++}
++
++#define __mem_io_w(v, a)		__last_io_start((u32)(v), (volatile void __iomem *)(a))
++#define __mem_io_r(a)			__last_io_start(0, (volatile void __iomem *)(a))
++#define __io_done()				__last_io_done()
++
++#endif
+diff --git a/arch/arm/mach-sc/last-io.c b/arch/arm/mach-sc/last-io.c
+new file mode 100644
+index 0000000..9b7872f
+--- /dev/null
++++ b/arch/arm/mach-sc/last-io.c
+@@ -0,0 +1,72 @@
++/* arch/arm/mach-sc/last-io.c
++ * Copyright (C) 2013 HTC Corporation.
++ * Author: Yili Xie <yili_xie@htc.com>
++ *
++ * It is a debug function without clock protection in SMP env.
++ * Performance is the first priority here.
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++*/
++
++#include <linux/types.h>
++#include <linux/dma-mapping.h>
++#include <linux/module.h>
++#include <mach/hardware.h>
++#include <mach/last-io.h>
++#include <mach/board_htc.h>
++
++
++int last_io_init = 0;
++struct last_io_percpu *htc_last_io;
++
++static void __iomem *io_sci_base;
++static void __iomem *io_sci_end;
++static dma_addr_t htc_last_io_phys;
++
++static int __init htc_last_io_init(void)
++{
++	size_t size;
++	int cpu_num;
++
++	if (!(htc_get_config(HTC_DBG_FLAG_SUPERMAN) &
++		SUPERMAN_FLAG_LAST_IO)) {
++		printk(KERN_INFO "[k] Disable last io function! \n");
++		return -EPERM;
++	}
++
++	cpu_num = num_possible_cpus();
++	printk(KERN_INFO "[k] Initialize %d buffers for last io ...\n", cpu_num);
++	size = sizeof(struct last_io_percpu) * cpu_num;
++
++	htc_last_io = dma_alloc_coherent(NULL, size, &htc_last_io_phys,
++								GFP_KERNEL);
++	if (!htc_last_io) {
++		printk(KERN_ERR"%s: Failed to allocate memory\n", __func__);
++		return -ENOMEM;
++	}
++
++	memset(htc_last_io, 0, size);
++
++	if (htc_get_config(HTC_DBG_FLAG_SUPERMAN) &
++		SUPERMAN_FLAG_HW_LAST_IO) {
++		printk(KERN_INFO "Record HW IO only.\n");
++		io_sci_base = __io(SCI_IOMAP_BASE);
++		io_sci_end  = __io(SPRD_ADISLAVE_BASE + SPRD_ADISLAVE_SIZE);
++	}
++
++	last_io_init = 1;
++	printk(KERN_INFO "[k] Debug IO superman is ready.\n");
++
++	return 0;
++}
++
++EXPORT_SYMBOL(last_io_init);
++EXPORT_SYMBOL(htc_last_io);
++arch_initcall(htc_last_io_init);
+-- 
+1.7.9.5
+
